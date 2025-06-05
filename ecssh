@@ -1,0 +1,110 @@
+#!/bin/sh
+# 2>nul || echo off && goto :windows_part
+# Universal ecssh launcher - works on Unix-like systems and Windows
+
+# Unix/Linux/macOS/Git Bash part
+set -e
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Detect OS and architecture
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"
+
+# Map architecture names
+case "$ARCH" in
+    x86_64|amd64)
+        ARCH="amd64"
+        ;;
+    aarch64|arm64)
+        ARCH="arm64"
+        ;;
+    *)
+        echo "Unsupported architecture: $ARCH" >&2
+        exit 1
+        ;;
+esac
+
+# Determine binary name
+BINARY=""
+case "$OS" in
+    darwin)
+        if [ "$ARCH" = "arm64" ]; then
+            BINARY="ecssh-macos-arm64"
+        else
+            BINARY="ecssh-macos-intel"
+        fi
+        ;;
+    linux)
+        if [ "$ARCH" = "arm64" ]; then
+            BINARY="ecssh-linux-arm64"
+        else
+            BINARY="ecssh-linux"
+        fi
+        ;;
+    mingw*|cygwin*|msys*)
+        # Git Bash or similar on Windows
+        if [ "$ARCH" = "arm64" ]; then
+            BINARY="ecssh-windows-arm64.exe"
+        else
+            BINARY="ecssh-windows.exe"
+        fi
+        ;;
+    *)
+        echo "Unsupported operating system: $OS" >&2
+        exit 1
+        ;;
+esac
+
+# Full path to binary
+BINARY_PATH="$SCRIPT_DIR/dist/$BINARY"
+
+# Check if binary exists
+if [ ! -f "$BINARY_PATH" ]; then
+    echo "Error: Binary not found: $BINARY_PATH" >&2
+    echo "" >&2
+    echo "Please run ./build.sh to build the binaries first." >&2
+    exit 1
+fi
+
+# Execute the binary with all arguments
+exec "$BINARY_PATH" "$@"
+exit $?
+
+:windows_part
+@echo off
+REM Windows part of the universal launcher
+
+setlocal enabledelayedexpansion
+
+REM Get the directory where this script is located
+set "SCRIPT_DIR=%~dp0"
+
+REM Detect architecture
+set "ARCH=amd64"
+if "%PROCESSOR_ARCHITECTURE%"=="AMD64" set "ARCH=amd64"
+if "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "ARCH=arm64"
+if "%PROCESSOR_ARCHITEW6432%"=="AMD64" set "ARCH=amd64"
+if "%PROCESSOR_ARCHITEW6432%"=="ARM64" set "ARCH=arm64"
+
+REM Determine binary name
+if "%ARCH%"=="arm64" (
+    set "BINARY=ecssh-windows-arm64.exe"
+) else (
+    set "BINARY=ecssh-windows.exe"
+)
+
+REM Full path to binary
+set "BINARY_PATH=%SCRIPT_DIR%dist\%BINARY%"
+
+REM Check if binary exists
+if not exist "%BINARY_PATH%" (
+    echo Error: Binary not found: %BINARY_PATH% >&2
+    echo. >&2
+    echo Please run build.sh to build the binaries first. >&2
+    exit /b 1
+)
+
+REM Execute the binary with all arguments
+"%BINARY_PATH%" %*
