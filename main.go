@@ -281,7 +281,7 @@ func (e *ECSClient) connectToContainer(clusterName, taskArn, containerName strin
 	return err
 }
 
-func (e *ECSClient) tryConnectWithFallback(cluster, taskName string, force, verbose bool) error {
+func (e *ECSClient) tryConnectWithFallback(cluster, taskName, containerFilter string, force, verbose bool) error {
 	// Find matching tasks
 	matchingTasks, err := e.FindMatchingTasks(cluster, taskName)
 	if err != nil {
@@ -301,7 +301,7 @@ func (e *ECSClient) tryConnectWithFallback(cluster, taskName string, force, verb
 	}
 	
 	// Select container
-	containerName, err := selectContainer(selectedTask.ContainerNames, force)
+	containerName, err := selectContainer(selectedTask.ContainerNames, containerFilter, force)
 	if err != nil {
 		return fmt.Errorf("error selecting container: %v", err)
 	}
@@ -341,9 +341,23 @@ func selectFromList(prompt string, items []string) (int, error) {
 	}
 }
 
-func selectContainer(containers []string, force bool) (string, error) {
+func selectContainer(containers []string, filter string, force bool) (string, error) {
 	if len(containers) == 0 {
 		return "", fmt.Errorf("no containers available")
+	}
+
+	// Filter containers if filter is provided
+	var filtered []string
+	if filter != "" {
+		for _, container := range containers {
+			if strings.Contains(container, filter) {
+				filtered = append(filtered, container)
+			}
+		}
+		if len(filtered) == 0 {
+			return "", fmt.Errorf("no containers matching filter '%s'", filter)
+		}
+		containers = filtered
 	}
 
 	if force || len(containers) == 1 {
@@ -444,7 +458,7 @@ func interactiveMode(ecsClient *ECSClient) error {
 	}
 
 	// Select container
-	containerName, err := selectContainer(selectedTask.ContainerNames, false)
+	containerName, err := selectContainer(selectedTask.ContainerNames, "", false)
 	if err != nil {
 		return err
 	}
@@ -468,15 +482,17 @@ SUBCOMMANDS:
 
 CONNECTION (no subcommand):
   ecssh                               # Interactive mode (select cluster/task/container)
-  ecssh [OPTIONS] [CLUSTER_ID] [TASK_NAME]
+  ecssh [OPTIONS] [CLUSTER_ID] [TASK_NAME] [CONTAINER_FILTER]
 
 Arguments:
-  CLUSTER_ID     ECS cluster name or ARN
-  TASK_NAME      Task definition name pattern
+  CLUSTER_ID        ECS cluster name or ARN
+  TASK_NAME         Task definition name pattern
+  CONTAINER_FILTER  Container name filter (partial match)
 
 Environment variables:
-  ECSSH_CLUSTER_ID    ECS cluster name or ARN
-  ECSSH_TASK_NAME     Task definition name pattern to search for
+  ECSSH_CLUSTER_ID        ECS cluster name or ARN
+  ECSSH_TASK_NAME         Task definition name pattern to search for
+  ECSSH_CONTAINER_FILTER  Container name filter
 
 Options:
   -f, --force    Connect to the first available container
@@ -489,6 +505,7 @@ Examples:
   ecssh list clusters                 # List all clusters
   ecssh list tasks my-cluster         # List tasks in cluster
   ecssh my-cluster web-app            # Connect to container
+  ecssh my-cluster web-app sidekiq    # Connect to sidekiq container
   ecssh -f my-cluster web-app         # Force mode
 `)
 }
@@ -605,7 +622,7 @@ func main() {
 
 	// Parse connection arguments
 	var force, verbose bool
-	var cluster, taskName string
+	var cluster, taskName, containerFilter string
 	var positionalArgs []string
 
 	for _, arg := range args {
@@ -619,12 +636,18 @@ func main() {
 		}
 	}
 
-	if len(positionalArgs) >= 2 {
+	if len(positionalArgs) >= 3 {
 		cluster = positionalArgs[0]
 		taskName = positionalArgs[1]
+		containerFilter = positionalArgs[2]
+	} else if len(positionalArgs) >= 2 {
+		cluster = positionalArgs[0]
+		taskName = positionalArgs[1]
+		containerFilter = os.Getenv("ECSSH_CONTAINER_FILTER")
 	} else {
 		cluster = os.Getenv("ECSSH_CLUSTER_ID")
 		taskName = os.Getenv("ECSSH_TASK_NAME")
+		containerFilter = os.Getenv("ECSSH_CONTAINER_FILTER")
 		if len(positionalArgs) >= 1 {
 			cluster = positionalArgs[0]
 		}
@@ -639,10 +662,13 @@ func main() {
 	if verbose {
 		fmt.Printf("Searching for tasks in cluster: %s\n", cluster)
 		fmt.Printf("Task name pattern: %s\n", taskName)
+		if containerFilter != "" {
+			fmt.Printf("Container filter: %s\n", containerFilter)
+		}
 	}
 
 	// Try connection with fallback
-	err = ecsClient.tryConnectWithFallback(cluster, taskName, force, verbose)
+	err = ecsClient.tryConnectWithFallback(cluster, taskName, containerFilter, force, verbose)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Connection failed: %v\n", err)
 		os.Exit(1)

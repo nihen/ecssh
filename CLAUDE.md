@@ -17,12 +17,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Connection (no subcommand)
 ./ecssh my-cluster web-app        # Connect using command line arguments
+./ecssh my-cluster web-app sidekiq # Connect with container filter
 ./ecssh -f my-cluster web-app     # Force mode (skip interactive selection)
 ./ecssh -v my-cluster web-app     # Verbose mode
 
 # Using environment variables
 export ECSSH_CLUSTER_ID=my-cluster
 export ECSSH_TASK_NAME=web-app
+export ECSSH_CONTAINER_FILTER=sidekiq  # Optional container filter
 ./ecssh                           # Connect using environment variables
 ./ecssh -f                        # Environment variables + force mode
 ```
@@ -54,17 +56,20 @@ shellcheck ecssh
 - **AWS Integration**: Requires AWS CLI to be installed and configured with appropriate ECS permissions
 
 ### Key Functions
-- `cache_get()`, `cache_set()`, `cache_clear()`: Fast caching system for AWS API responses
-- `list_clusters()`: Lists all ECS clusters with running task counts
-- `list_tasks()`: Shows detailed task information for a specific cluster
-- `usage()`: Displays help information
+- `NewECSClient()`: Creates AWS ECS client with default configuration
+- `ListClusters()`: Lists all ECS clusters with running task counts
+- `ListTasksInCluster()`: Shows detailed task information for a specific cluster
+- `FindMatchingTasks()`: Filters tasks by name pattern
+- `selectContainer()`: Selects container with optional name filter
+- `connectToContainer()`: Establishes ECS Execute Command session
 
 ### Task Selection Flow
 1. Retrieves running tasks from specified ECS cluster
 2. Filters tasks by task definition name pattern
 3. Lists containers in matching tasks
-4. Allows interactive selection or uses first container in force mode
-5. Executes `aws ecs execute-command` to establish connection
+4. Filters containers by name if container filter is provided (v0.0.2+)
+5. Allows interactive selection or uses first container in force mode
+6. Executes `aws ecs execute-command` to establish connection
 
 ### Required AWS Permissions
 The script requires the following AWS permissions:
