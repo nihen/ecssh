@@ -1,27 +1,22 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
 type ECSClient struct {
 	client *ecs.Client
+	cfg    aws.Config
 	region string
 	ctx    context.Context
 }
@@ -32,7 +27,9 @@ type TaskInfo struct {
 	ContainerNames []string
 }
 
-
+type Backend interface {
+	Connect(streamUrl, tokenValue string, verbose bool) error
+}
 
 func NewECSClient() (*ECSClient, error) {
 	cfg, err := config.LoadDefaultConfig(context.TODO())
@@ -42,6 +39,7 @@ func NewECSClient() (*ECSClient, error) {
 
 	return &ECSClient{
 		client: ecs.NewFromConfig(cfg),
+		cfg:    cfg,
 		region: cfg.Region,
 		ctx:    context.TODO(),
 	}, nil
@@ -154,24 +152,7 @@ func extractTaskId(taskArn string) string {
 	return taskArn
 }
 
-// filteredWriter filters out unwanted messages from session-manager-plugin
-type filteredWriter struct {
-	writer io.Writer
-	filter func(string) bool
-}
-
-func (f *filteredWriter) Write(p []byte) (n int, err error) {
-	scanner := bufio.NewScanner(strings.NewReader(string(p)))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if f.filter(line) {
-			f.writer.Write([]byte(line + "\n"))
-		}
-	}
-	return len(p), nil
-}
-
-func (e *ECSClient) connectToContainer(clusterName, taskArn, containerName, command string, verbose bool) error {
+func (e *ECSClient) connectToContainer(clusterName, taskArn, containerName, command, backendType string, verbose bool) error {
 	// Get session from ECS ExecuteCommand
 	command = strings.TrimSpace(command)
 	if command == "" {
@@ -188,113 +169,52 @@ func (e *ECSClient) connectToContainer(clusterName, taskArn, containerName, comm
 		return fmt.Errorf("ExecuteCommand failed: %v", err)
 	}
 
-	// Marshal session data
-	sessionData, err := json.Marshal(execResult.Session)
-	if err != nil {
-		return fmt.Errorf("failed to marshal session: %v", err)
+	// Validate session response
+	if execResult.Session == nil {
+		return fmt.Errorf("ExecuteCommand returned nil session")
+	}
+	if execResult.Session.StreamUrl == nil {
+		return fmt.Errorf("ExecuteCommand returned nil StreamUrl")
+	}
+	if execResult.Session.TokenValue == nil {
+		return fmt.Errorf("ExecuteCommand returned nil TokenValue")
 	}
 
-	// Get task details to extract runtime ID
-	taskDetails, err := e.client.DescribeTasks(e.ctx, &ecs.DescribeTasksInput{
-		Cluster: aws.String(clusterName),
-		Tasks:   []string{taskArn},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to describe task: %v", err)
-	}
-
-	if len(taskDetails.Tasks) == 0 {
-		return fmt.Errorf("task not found")
-	}
-
-	// Find the runtime ID for the specified container
-	var runtimeId string
-	for _, container := range taskDetails.Tasks[0].Containers {
-		if *container.Name == containerName {
-			runtimeId = *container.RuntimeId
-			break
+	// Create the appropriate backend
+	var backend Backend
+	switch backendType {
+	case "native":
+		backend = &NativeBackend{awsCfg: e.cfg}
+	case "plugin":
+		sessionJSON, err := json.Marshal(execResult.Session)
+		if err != nil {
+			return fmt.Errorf("failed to marshal session: %v", err)
 		}
-	}
-
-	if runtimeId == "" {
-		return fmt.Errorf("runtime ID not found for container %s", containerName)
-	}
-
-	// Create SSM target
-	target := &ssm.StartSessionInput{
-		Target: aws.String(fmt.Sprintf("ecs:%s_%s_%s", clusterName, extractTaskId(taskArn), runtimeId)),
-	}
-
-	targetData, err := json.Marshal(target)
-	if err != nil {
-		return fmt.Errorf("failed to marshal target: %v", err)
-	}
-
-	// Call session-manager-plugin directly
-	// On Windows, the plugin might have .exe extension
-	pluginName := "session-manager-plugin"
-	if runtime.GOOS == "windows" {
-		// Try to find the plugin with .exe extension if not in PATH
-		if _, err := exec.LookPath(pluginName); err != nil {
-			pluginName = "session-manager-plugin.exe"
+		backend = &PluginBackend{
+			ecsClient:     e,
+			clusterName:   clusterName,
+			taskArn:       taskArn,
+			containerName: containerName,
+			sessionJSON:   sessionJSON,
 		}
+	default:
+		return fmt.Errorf("unknown backend type: %s (must be 'plugin' or 'native')", backendType)
 	}
 
-	cmd := exec.Command(pluginName,
-		string(sessionData),
-		e.region,
-		"StartSession",
-		"", // profile (empty for default)
-		string(targetData),
-		fmt.Sprintf("https://ecs.%s.amazonaws.com", e.region))
-
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	
-	// Filter stderr to remove unwanted messages
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stderr pipe: %v", err)
-	}
-
-	// Start the command
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start session-manager-plugin: %v", err)
-	}
-
-	// Copy stderr, filtering out unwanted messages
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderrPipe)
-		for scanner.Scan() {
-			line := scanner.Text()
-			// Filter out "Starting session" message
-			if !strings.Contains(line, "Starting session with SessionId:") {
-				fmt.Fprintln(os.Stderr, line)
-			}
-		}
-	}()
-
-	// Wait for command to complete
-	err = cmd.Wait()
-	wg.Wait()
-	
-	return err
+	return backend.Connect(*execResult.Session.StreamUrl, *execResult.Session.TokenValue, verbose)
 }
 
-func (e *ECSClient) tryConnectWithFallback(cluster, taskName, containerFilter, command string, force, verbose bool) error {
+func (e *ECSClient) tryConnectWithFallback(cluster, taskName, containerFilter, command, backendType string, force, verbose bool) error {
 	// Find matching tasks
 	matchingTasks, err := e.FindMatchingTasks(cluster, taskName)
 	if err != nil {
 		return fmt.Errorf("error finding tasks: %v", err)
 	}
-	
+
 	if len(matchingTasks) == 0 {
 		return fmt.Errorf("no tasks matching '%s'", taskName)
 	}
-	
+
 	// Use first matching task
 	selectedTask := matchingTasks[0]
 	if verbose {
@@ -302,19 +222,19 @@ func (e *ECSClient) tryConnectWithFallback(cluster, taskName, containerFilter, c
 		fmt.Printf("Found matching task: %s\n", taskId)
 		fmt.Printf("Found %d running container(s)\n", len(selectedTask.ContainerNames))
 	}
-	
+
 	// Select container
 	containerName, err := selectContainer(selectedTask.ContainerNames, containerFilter, force)
 	if err != nil {
 		return fmt.Errorf("error selecting container: %v", err)
 	}
-	
+
 	if verbose {
 		fmt.Printf("Selected container: %s\n", containerName)
 	}
-	
+
 	// Connect
-	return e.connectToContainer(cluster, selectedTask.TaskArn, containerName, command, verbose)
+	return e.connectToContainer(cluster, selectedTask.TaskArn, containerName, command, backendType, verbose)
 }
 
 func selectFromList(prompt string, items []string) (int, error) {
@@ -374,7 +294,7 @@ func selectContainer(containers []string, filter string, force bool) (string, er
 	return containers[idx], nil
 }
 
-func interactiveMode(ecsClient *ECSClient) error {
+func interactiveMode(ecsClient *ECSClient, backendType string) error {
 	// Get clusters
 	clusters, err := ecsClient.ListClusters()
 	if err != nil {
@@ -470,7 +390,7 @@ func interactiveMode(ecsClient *ECSClient) error {
 
 	// Connect
 	command := os.Getenv("ECSSH_COMMAND")
-	return ecsClient.connectToContainer(selectedCluster, selectedTask.TaskArn, containerName, command, false)
+	return ecsClient.connectToContainer(selectedCluster, selectedTask.TaskArn, containerName, command, backendType, false)
 }
 
 func printUsage() {
@@ -498,11 +418,13 @@ Environment variables:
   ECSSH_TASK_NAME         Task definition name pattern to search for
   ECSSH_CONTAINER_FILTER  Container name filter
   ECSSH_COMMAND           Command to execute in the container
+  ECSSH_BACKEND           Backend to use for connection (plugin or native)
 
 Options:
   -f, --force              Connect to the first available container
   -v, --verbose            Show verbose output during execution
   -c, --command COMMAND    Command to execute in the container (default: /bin/bash)
+  -b, --backend BACKEND    Backend to use: native (default) or plugin
 
 Examples:
   ecssh                                          # Interactive mode
@@ -518,9 +440,24 @@ Examples:
 `)
 }
 
+func validateBackendType(backendType string) {
+	switch backendType {
+	case "plugin", "native":
+	default:
+		fmt.Fprintf(os.Stderr, "Error: invalid backend '%s' (must be 'plugin' or 'native')\n", backendType)
+		os.Exit(1)
+	}
+}
+
 func main() {
 	args := os.Args[1:]
-	
+
+	// Determine backend type from environment (validated later, before connection)
+	backendType := os.Getenv("ECSSH_BACKEND")
+	if backendType == "" {
+		backendType = "native"
+	}
+
 	// If no arguments, start interactive mode
 	if len(args) == 0 {
 		// Try environment variables first
@@ -530,13 +467,14 @@ func main() {
 			args = []string{cluster, taskName}
 		} else {
 			// Interactive mode
+			validateBackendType(backendType)
 			ecsClient, err := NewECSClient()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error initializing AWS client: %v\n", err)
 				os.Exit(1)
 			}
-			
-			err = interactiveMode(ecsClient)
+
+			err = interactiveMode(ecsClient, backendType)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -578,9 +516,9 @@ func main() {
 				if cluster.Status != nil {
 					status = *cluster.Status
 				}
-				fmt.Printf("  - %s (status: %s, running tasks: %d)\n", 
+				fmt.Printf("  - %s (status: %s, running tasks: %d)\n",
 					*cluster.ClusterName, status, cluster.RunningTasksCount)
-				
+
 				// Show tasks for this cluster if any exist
 				if cluster.RunningTasksCount > 0 {
 					fmt.Println("    Tasks:")
@@ -647,6 +585,15 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error: -c/--command requires an argument\n")
 				os.Exit(1)
 			}
+		case "-b", "--backend":
+			if i+1 < len(args) {
+				i++
+				backendType = args[i]
+				validateBackendType(backendType)
+			} else {
+				fmt.Fprintf(os.Stderr, "Error: -b/--backend requires an argument\n")
+				os.Exit(1)
+			}
 		default:
 			positionalArgs = append(positionalArgs, args[i])
 		}
@@ -688,10 +635,14 @@ func main() {
 		if command != "" {
 			fmt.Printf("Command: %s\n", command)
 		}
+		fmt.Printf("Backend: %s\n", backendType)
 	}
 
+	// Validate backend before attempting connection
+	validateBackendType(backendType)
+
 	// Try connection with fallback
-	err = ecsClient.tryConnectWithFallback(cluster, taskName, containerFilter, command, force, verbose)
+	err = ecsClient.tryConnectWithFallback(cluster, taskName, containerFilter, command, backendType, force, verbose)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Connection failed: %v\n", err)
 		os.Exit(1)
