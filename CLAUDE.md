@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`ecssh` is a Bash script tool for connecting to Amazon ECS (Elastic Container Service) containers using AWS ECS Execute Command. It provides an interactive interface for selecting and connecting to running containers in ECS clusters.
+`ecssh` is a Go-based CLI tool for connecting to Amazon ECS (Elastic Container Service) containers using AWS ECS Execute Command. It provides an interactive interface for selecting and connecting to running containers in ECS clusters.
 
 ## Key Commands
 
@@ -21,26 +21,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./ecssh -f my-cluster web-app     # Force mode (skip interactive selection)
 ./ecssh -v my-cluster web-app     # Verbose mode
 ./ecssh -c "ls -la" my-cluster web-app  # Run command in container
+./ecssh -b plugin my-cluster web-app   # Use plugin backend (requires session-manager-plugin)
+./ecssh --backend native my-cluster web-app  # Explicitly use native backend (default)
 
 # Using environment variables
 export ECSSH_CLUSTER_ID=my-cluster
 export ECSSH_TASK_NAME=web-app
 export ECSSH_CONTAINER_FILTER=sidekiq  # Optional container filter
 export ECSSH_COMMAND="ls -la"          # Optional command (default: /bin/bash)
+export ECSSH_BACKEND=native            # Optional backend selection (default: native)
 ./ecssh                           # Connect using environment variables
 ./ecssh -f                        # Environment variables + force mode
 ```
 
 ### Development Commands
 ```bash
-# Make the script executable
-chmod +x ecssh
+# Build
+go build -o /dev/null ./...
 
-# Check script syntax
-bash -n ecssh
-
-# Run shellcheck for linting (if installed)
-shellcheck ecssh
+# Build for all platforms
+./build.sh
 ```
 
 ## Architecture Notes
@@ -51,11 +51,12 @@ shellcheck ecssh
 - **list tasks**: List tasks in specific cluster
 - **Connection mode**: Direct connection without subcommand
 
-### Script Structure
-- **Caching System**: Uses `/tmp/ecssh-cache-$$` directory with 5-minute TTL for performance optimization
-- **Error Handling**: Uses `set -euo pipefail` for strict error handling
-- **Cleanup**: Implements trap for cache cleanup on exit
-- **AWS Integration**: Requires AWS CLI to be installed and configured with appropriate ECS permissions
+### Application Structure
+- **Backend System**: Supports pluggable backends via the Backend interface (`NativeBackend` and `PluginBackend`)
+  - **NativeBackend**: Uses `ssm-session-client` library for direct SSM sessions without requiring session-manager-plugin
+  - **PluginBackend**: Delegates to `session-manager-plugin` binary (legacy, requires external plugin)
+- **Terminal Management**: Handles terminal size tracking with SIGWINCH support (Unix) and polling (Windows), with graceful restore on signal interruption
+- **AWS Integration**: Uses AWS SDK for Go; requires proper AWS credentials configured with appropriate ECS permissions
 
 ### Key Functions
 - `NewECSClient()`: Creates AWS ECS client with default configuration

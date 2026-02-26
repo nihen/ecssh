@@ -1,1 +1,5 @@
 /dist
+# Go build output
+/ecssh
+/ecssh-*
+*.exe

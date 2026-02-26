@@ -2,7 +2,7 @@
 
 A CLI tool for easy access to ECS containers
 
-![Version](https://img.shields.io/badge/version-v0.0.3-blue)
+![Version](https://img.shields.io/badge/version-v0.0.4-blue)
 
 ## Overview
 
@@ -11,9 +11,9 @@ A CLI tool for easy access to ECS containers
 ## Prerequisites
 
 - AWS CLI installed and configured
-- AWS Session Manager Plugin installed
+- AWS Session Manager Plugin installed (only required when using `--backend plugin`)
 - Proper AWS credentials configured
-- Go 1.21+ (for manual installation only)
+- Go 1.25+ (for manual installation only)
 - Required AWS permissions:
   - `ecs:ListClusters`
   - `ecs:DescribeClusters`
@@ -43,11 +43,9 @@ cd ecssh
 # Build binaries
 ./build.sh
 
-# Make the universal launcher executable
-chmod +x ecssh
-
-# Copy to PATH (optional)
-sudo cp ecssh /usr/local/bin/
+# Copy to PATH (optional, choose the binary for your platform)
+# e.g., macOS Apple Silicon: sudo cp dist/ecssh-darwin-arm64 /usr/local/bin/ecssh
+# e.g., Linux x86_64:        sudo cp dist/ecssh-linux /usr/local/bin/ecssh
 ```
 
 ## Usage
@@ -86,6 +84,7 @@ ecssh list tasks my-cluster
 - `-f, --force` - Automatically connect to first container when multiple exist
 - `-v, --verbose` - Show detailed execution logs
 - `-c, --command COMMAND` - Command to execute in the container (default: /bin/bash)
+- `-b, --backend BACKEND` - Select connection backend: `native` (default) or `plugin`. The `native` backend doesn't require session-manager-plugin.
 
 ### Examples
 
@@ -158,6 +157,7 @@ ecssh production-cluster web-service
 - `ECSSH_TASK_NAME` - Default task name pattern
 - `ECSSH_CONTAINER_FILTER` - Default container name filter (v0.0.2+)
 - `ECSSH_COMMAND` - Command to execute in the container (v0.0.3+)
+- `ECSSH_BACKEND` - Connection backend: `native` (default) or `plugin` (v0.0.4+)
 
 ## Supported Platforms
 
