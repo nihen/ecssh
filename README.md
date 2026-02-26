@@ -2,7 +2,7 @@
 
 A CLI tool for easy access to ECS containers
 
-![Version](https://img.shields.io/badge/version-v0.0.2-blue)
+![Version](https://img.shields.io/badge/version-v0.0.3-blue)
 
 ## Overview
 
@@ -85,6 +85,7 @@ ecssh list tasks my-cluster
 
 - `-f, --force` - Automatically connect to first container when multiple exist
 - `-v, --verbose` - Show detailed execution logs
+- `-c, --command COMMAND` - Command to execute in the container (default: /bin/bash)
 
 ### Examples
 
@@ -104,6 +105,12 @@ ecssh production-cluster web-service sidekiq
 # Filter containers using environment variable
 export ECSSH_CONTAINER_FILTER=nginx
 ecssh production-cluster web-service
+
+# Run a one-liner command in the container
+ecssh -c "ls -la /app" production-cluster web-service
+
+# Use sh instead of bash
+ecssh -c "/bin/sh" production-cluster web-service
 
 # Check clusters before connecting
 ecssh list clusters
@@ -150,6 +157,7 @@ ecssh production-cluster web-service
 - `ECSSH_CLUSTER_ID` - Default ECS cluster name
 - `ECSSH_TASK_NAME` - Default task name pattern
 - `ECSSH_CONTAINER_FILTER` - Default container name filter (v0.0.2+)
+- `ECSSH_COMMAND` - Command to execute in the container (v0.0.3+)
 
 ## Supported Platforms
 

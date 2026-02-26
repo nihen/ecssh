@@ -173,6 +173,7 @@ func (f *filteredWriter) Write(p []byte) (n int, err error) {
 
 func (e *ECSClient) connectToContainer(clusterName, taskArn, containerName, command string, verbose bool) error {
 	// Get session from ECS ExecuteCommand
+	command = strings.TrimSpace(command)
 	if command == "" {
 		command = "/bin/bash"
 	}
@@ -468,7 +469,8 @@ func interactiveMode(ecsClient *ECSClient) error {
 	fmt.Printf("\nConnecting to %s in task %s...\n", containerName, extractTaskId(selectedTask.TaskArn))
 
 	// Connect
-	return ecsClient.connectToContainer(selectedCluster, selectedTask.TaskArn, containerName, "", false)
+	command := os.Getenv("ECSSH_COMMAND")
+	return ecsClient.connectToContainer(selectedCluster, selectedTask.TaskArn, containerName, command, false)
 }
 
 func printUsage() {
@@ -682,6 +684,9 @@ func main() {
 		fmt.Printf("Task name pattern: %s\n", taskName)
 		if containerFilter != "" {
 			fmt.Printf("Container filter: %s\n", containerFilter)
+		}
+		if command != "" {
+			fmt.Printf("Command: %s\n", command)
 		}
 	}
 
