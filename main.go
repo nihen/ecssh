@@ -171,15 +171,17 @@ func (f *filteredWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func (e *ECSClient) connectToContainer(clusterName, taskArn, containerName string, verbose bool) error {
+func (e *ECSClient) connectToContainer(clusterName, taskArn, containerName, command string, verbose bool) error {
 	// Get session from ECS ExecuteCommand
-	// Always use /bin/bash for container shell (ECS containers are typically Linux)
+	if command == "" {
+		command = "/bin/bash"
+	}
 	execResult, err := e.client.ExecuteCommand(e.ctx, &ecs.ExecuteCommandInput{
 		Cluster:     aws.String(clusterName),
 		Task:        aws.String(taskArn),
 		Container:   aws.String(containerName),
 		Interactive: true,
-		Command:     aws.String("/bin/bash"),
+		Command:     aws.String(command),
 	})
 	if err != nil {
 		return fmt.Errorf("ExecuteCommand failed: %v", err)
@@ -281,7 +283,7 @@ func (e *ECSClient) connectToContainer(clusterName, taskArn, containerName strin
 	return err
 }
 
-func (e *ECSClient) tryConnectWithFallback(cluster, taskName, containerFilter string, force, verbose bool) error {
+func (e *ECSClient) tryConnectWithFallback(cluster, taskName, containerFilter, command string, force, verbose bool) error {
 	// Find matching tasks
 	matchingTasks, err := e.FindMatchingTasks(cluster, taskName)
 	if err != nil {
@@ -311,7 +313,7 @@ func (e *ECSClient) tryConnectWithFallback(cluster, taskName, containerFilter st
 	}
 	
 	// Connect
-	return e.connectToContainer(cluster, selectedTask.TaskArn, containerName, verbose)
+	return e.connectToContainer(cluster, selectedTask.TaskArn, containerName, command, verbose)
 }
 
 func selectFromList(prompt string, items []string) (int, error) {
@@ -466,7 +468,7 @@ func interactiveMode(ecsClient *ECSClient) error {
 	fmt.Printf("\nConnecting to %s in task %s...\n", containerName, extractTaskId(selectedTask.TaskArn))
 
 	// Connect
-	return ecsClient.connectToContainer(selectedCluster, selectedTask.TaskArn, containerName, false)
+	return ecsClient.connectToContainer(selectedCluster, selectedTask.TaskArn, containerName, "", false)
 }
 
 func printUsage() {
@@ -493,20 +495,24 @@ Environment variables:
   ECSSH_CLUSTER_ID        ECS cluster name or ARN
   ECSSH_TASK_NAME         Task definition name pattern to search for
   ECSSH_CONTAINER_FILTER  Container name filter
+  ECSSH_COMMAND           Command to execute in the container
 
 Options:
-  -f, --force    Connect to the first available container
-  -v, --verbose  Show verbose output during execution
+  -f, --force              Connect to the first available container
+  -v, --verbose            Show verbose output during execution
+  -c, --command COMMAND    Command to execute in the container (default: /bin/bash)
 
 Examples:
-  ecssh                               # Interactive mode
-  ecssh help                          # Show this help
-  ecssh list                          # List all clusters
-  ecssh list clusters                 # List all clusters
-  ecssh list tasks my-cluster         # List tasks in cluster
-  ecssh my-cluster web-app            # Connect to container
-  ecssh my-cluster web-app sidekiq    # Connect to sidekiq container
-  ecssh -f my-cluster web-app         # Force mode
+  ecssh                                          # Interactive mode
+  ecssh help                                     # Show this help
+  ecssh list                                     # List all clusters
+  ecssh list clusters                            # List all clusters
+  ecssh list tasks my-cluster                    # List tasks in cluster
+  ecssh my-cluster web-app                       # Connect to container
+  ecssh my-cluster web-app sidekiq               # Connect to sidekiq container
+  ecssh -f my-cluster web-app                    # Force mode
+  ecssh -c "ls -la" my-cluster web-app           # Run command and exit
+  ecssh -c "/bin/sh" my-cluster web-app          # Use sh instead of bash
 `)
 }
 
@@ -622,17 +628,25 @@ func main() {
 
 	// Parse connection arguments
 	var force, verbose bool
-	var cluster, taskName, containerFilter string
+	var cluster, taskName, containerFilter, command string
 	var positionalArgs []string
 
-	for _, arg := range args {
-		switch arg {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "-f", "--force":
 			force = true
 		case "-v", "--verbose":
 			verbose = true
+		case "-c", "--command":
+			if i+1 < len(args) {
+				i++
+				command = args[i]
+			} else {
+				fmt.Fprintf(os.Stderr, "Error: -c/--command requires an argument\n")
+				os.Exit(1)
+			}
 		default:
-			positionalArgs = append(positionalArgs, arg)
+			positionalArgs = append(positionalArgs, args[i])
 		}
 	}
 
@@ -653,6 +667,10 @@ func main() {
 		}
 	}
 
+	if command == "" {
+		command = os.Getenv("ECSSH_COMMAND")
+	}
+
 	if cluster == "" || taskName == "" {
 		fmt.Fprintf(os.Stderr, "Error: Both CLUSTER_ID and TASK_NAME are required\n")
 		printUsage()
@@ -668,7 +686,7 @@ func main() {
 	}
 
 	// Try connection with fallback
-	err = ecsClient.tryConnectWithFallback(cluster, taskName, containerFilter, force, verbose)
+	err = ecsClient.tryConnectWithFallback(cluster, taskName, containerFilter, command, force, verbose)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Connection failed: %v\n", err)
 		os.Exit(1)

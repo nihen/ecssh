@@ -20,11 +20,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./ecssh my-cluster web-app sidekiq # Connect with container filter
 ./ecssh -f my-cluster web-app     # Force mode (skip interactive selection)
 ./ecssh -v my-cluster web-app     # Verbose mode
+./ecssh -c "ls -la" my-cluster web-app  # Run command in container
 
 # Using environment variables
 export ECSSH_CLUSTER_ID=my-cluster
 export ECSSH_TASK_NAME=web-app
 export ECSSH_CONTAINER_FILTER=sidekiq  # Optional container filter
+export ECSSH_COMMAND="ls -la"          # Optional command (default: /bin/bash)
 ./ecssh                           # Connect using environment variables
 ./ecssh -f                        # Environment variables + force mode
 ```
